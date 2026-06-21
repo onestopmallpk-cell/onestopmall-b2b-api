@@ -30,44 +30,110 @@ function requireApiKey(req, res, next) {
 app.get('/', (req, res) => {
   res.json({
     name: 'OneStopMall B2B API',
-    version: '1.0.0',
+    version: '2.0.0',
     store: 'www.onestopmall.pk',
+    total_products: '3000+',
     contact: 'onestopmall.pk@gmail.com',
     endpoints: {
-      all_products: 'GET /api/products',
-      single_product: 'GET /api/products/:id',
-      search: 'GET /api/products/search?q=keyword',
-      by_category: 'GET /api/products/category/:category',
-      inventory: 'GET /api/inventory/:product_id',
-      categories: 'GET /api/categories',
-      create_order: 'POST /api/orders',
-      order_status: 'GET /api/orders/:id'
+      all_products:     'GET /api/products?page=1&limit=250',
+      all_products_max: 'GET /api/products/all (sare products ek baar mein)',
+      single_product:   'GET /api/products/:id',
+      search:           'GET /api/products/search?q=keyword',
+      by_category:      'GET /api/products/category/:category',
+      inventory:        'GET /api/inventory/:product_id',
+      categories:       'GET /api/categories',
+      create_order:     'POST /api/orders',
+      order_status:     'GET /api/orders/:id'
     },
     authentication: 'Send x-api-key header with every request'
   });
 });
 
+// ================================================
+// GET ALL PRODUCTS - WITH PAGINATION
+// ================================================
 app.get('/api/products', requireApiKey, async (req, res) => {
   try {
-    const limit = req.query.limit || 50;
+    const limit = Math.min(parseInt(req.query.limit) || 250, 250);
+    const page_info = req.query.page_info || null;
     const status = req.query.status || 'active';
-    const response = await axios.get(
-      `${SHOPIFY_BASE}/products.json?limit=${limit}&status=${status}`,
-      { headers: shopifyHeaders }
-    );
+
+    let url = `${SHOPIFY_BASE}/products.json?limit=${limit}&status=${status}`;
+    if (page_info) url += `&page_info=${page_info}`;
+
+    const response = await axios.get(url, { headers: shopifyHeaders });
     const products = response.data.products.map(p => formatProduct(p));
-    res.json({ success: true, total: products.length, products });
+
+    // Next page info from headers
+    const linkHeader = response.headers['link'] || '';
+    let nextPageInfo = null;
+    if (linkHeader.includes('rel="next"')) {
+      const match = linkHeader.match(/page_info=([^&>]+)[^>]*>;\s*rel="next"/);
+      if (match) nextPageInfo = match[1];
+    }
+
+    res.json({
+      success: true,
+      total_this_page: products.length,
+      has_more: !!nextPageInfo,
+      next_page_info: nextPageInfo,
+      next_page_url: nextPageInfo
+        ? `/api/products?page_info=${nextPageInfo}&limit=${limit}`
+        : null,
+      products: products
+    });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
+// ================================================
+// GET ALL PRODUCTS AT ONCE (SARE PRODUCTS)
+// ================================================
+app.get('/api/products/all', requireApiKey, async (req, res) => {
+  try {
+    let allProducts = [];
+    let url = `${SHOPIFY_BASE}/products.json?limit=250&status=active`;
+    let hasMore = true;
+
+    while (hasMore) {
+      const response = await axios.get(url, { headers: shopifyHeaders });
+      const products = response.data.products;
+      allProducts = allProducts.concat(products.map(p => formatProduct(p)));
+
+      const linkHeader = response.headers['link'] || '';
+      if (linkHeader.includes('rel="next"')) {
+        const match = linkHeader.match(/page_info=([^&>]+)[^>]*>;\s*rel="next"/);
+        if (match) {
+          url = `${SHOPIFY_BASE}/products.json?limit=250&page_info=${match[1]}`;
+        } else {
+          hasMore = false;
+        }
+      } else {
+        hasMore = false;
+      }
+    }
+
+    res.json({
+      success: true,
+      total: allProducts.length,
+      message: `All ${allProducts.length} products from OneStopMall`,
+      products: allProducts
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ================================================
+// SEARCH PRODUCTS
+// ================================================
 app.get('/api/products/search', requireApiKey, async (req, res) => {
   try {
     const query = req.query.q;
     if (!query) return res.status(400).json({ success: false, error: 'Query required' });
     const response = await axios.get(
-      `${SHOPIFY_BASE}/products.json?title=${encodeURIComponent(query)}&status=active&limit=50`,
+      `${SHOPIFY_BASE}/products.json?title=${encodeURIComponent(query)}&status=active&limit=250`,
       { headers: shopifyHeaders }
     );
     const products = response.data.products.map(p => formatProduct(p));
@@ -77,11 +143,14 @@ app.get('/api/products/search', requireApiKey, async (req, res) => {
   }
 });
 
+// ================================================
+// PRODUCTS BY CATEGORY
+// ================================================
 app.get('/api/products/category/:category', requireApiKey, async (req, res) => {
   try {
     const { category } = req.params;
     const response = await axios.get(
-      `${SHOPIFY_BASE}/products.json?vendor=${encodeURIComponent(category)}&status=active&limit=50`,
+      `${SHOPIFY_BASE}/products.json?vendor=${encodeURIComponent(category)}&status=active&limit=250`,
       { headers: shopifyHeaders }
     );
     const products = response.data.products.map(p => formatProduct(p));
@@ -91,6 +160,9 @@ app.get('/api/products/category/:category', requireApiKey, async (req, res) => {
   }
 });
 
+// ================================================
+// SINGLE PRODUCT
+// ================================================
 app.get('/api/products/:id', requireApiKey, async (req, res) => {
   try {
     const response = await axios.get(
@@ -103,6 +175,9 @@ app.get('/api/products/:id', requireApiKey, async (req, res) => {
   }
 });
 
+// ================================================
+// INVENTORY CHECK
+// ================================================
 app.get('/api/inventory/:product_id', requireApiKey, async (req, res) => {
   try {
     const response = await axios.get(
@@ -124,6 +199,9 @@ app.get('/api/inventory/:product_id', requireApiKey, async (req, res) => {
   }
 });
 
+// ================================================
+// CATEGORIES
+// ================================================
 app.get('/api/categories', requireApiKey, async (req, res) => {
   try {
     const response = await axios.get(
@@ -142,6 +220,9 @@ app.get('/api/categories', requireApiKey, async (req, res) => {
   }
 });
 
+// ================================================
+// CREATE ORDER
+// ================================================
 app.post('/api/orders', requireApiKey, async (req, res) => {
   try {
     const { customer, line_items, note } = req.body;
@@ -166,6 +247,9 @@ app.post('/api/orders', requireApiKey, async (req, res) => {
   }
 });
 
+// ================================================
+// ORDER STATUS
+// ================================================
 app.get('/api/orders/:id', requireApiKey, async (req, res) => {
   try {
     const response = await axios.get(`${SHOPIFY_BASE}/orders/${req.params.id}.json`, { headers: shopifyHeaders });
@@ -176,6 +260,9 @@ app.get('/api/orders/:id', requireApiKey, async (req, res) => {
   }
 });
 
+// ================================================
+// FORMAT PRODUCT
+// ================================================
 function formatProduct(p) {
   return {
     id: p.id,
@@ -187,12 +274,20 @@ function formatProduct(p) {
     status: p.status,
     url: `https://www.onestopmall.pk/products/${p.handle}`,
     images: p.images?.map(img => ({ id: img.id, src: img.src, alt: img.alt })) || [],
-    variants: p.variants?.map(v => ({ id: v.id, title: v.title, sku: v.sku, price: v.price, compare_price: v.compare_at_price, available: v.inventory_quantity > 0, inventory: v.inventory_quantity })) || [],
+    variants: p.variants?.map(v => ({
+      id: v.id,
+      title: v.title,
+      sku: v.sku,
+      price: v.price,
+      compare_price: v.compare_at_price,
+      available: v.inventory_quantity > 0,
+      inventory: v.inventory_quantity
+    })) || [],
     created_at: p.created_at,
     updated_at: p.updated_at
   };
 }
 
 app.listen(PORT, () => {
-  console.log(`OneStopMall B2B API running on port ${PORT}`);
+  console.log(`OneStopMall B2B API v2.0 running on port ${PORT}`);
 });
